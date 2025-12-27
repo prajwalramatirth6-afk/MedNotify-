@@ -30,7 +30,8 @@ const App: React.FC = () => {
     notificationsEnabled: true,
     vibrateEnabled: true,
     alarmStyle: 'urgent',
-    snoozeDuration: 5
+    snoozeDuration: 5,
+    missedWindow: 60 // Default 60 minutes
   });
 
   const [deletingMedId, setDeletingMedId] = useState<string | null>(null);
@@ -97,7 +98,6 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Only save if a user session is active (userName exists)
     if (userName) {
       localStorage.setItem('mednotify_meds', JSON.stringify(medications));
       localStorage.setItem('mednotify_deleted_meds', JSON.stringify(deletedMedications));
@@ -185,7 +185,7 @@ const App: React.FC = () => {
     return () => stopAlarm();
   }, [alertMed, settings.alarmStyle]);
 
-  const handleLogDose = (medId: string, status: 'taken' | 'skipped') => {
+  const handleLogDose = (medId: string, status: 'taken' | 'skipped' | 'missed') => {
     initAudio();
     const newLog: DoseLog = {
       id: Math.random().toString(36).substr(2, 9),
@@ -202,7 +202,8 @@ const App: React.FC = () => {
       ));
     }
     
-    setAlertMed(null);
+    // Clear alerts or snoozes for this medicine
+    if (alertMed?.id === medId) setAlertMed(null);
     setSnoozedMeds(prev => {
       const next = { ...prev };
       delete next[medId];
@@ -222,13 +223,16 @@ const App: React.FC = () => {
     const timer = setInterval(() => {
       const now = new Date();
       const today = now.toISOString().split('T')[0];
-      const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      const currentHours = now.getHours();
+      const currentMinutes = now.getMinutes();
+      const currentTimeStr = `${currentHours.toString().padStart(2, '0')}:${currentMinutes.toString().padStart(2, '0')}`;
       
       medications.forEach(med => {
-        const notificationKey = `${med.id}-${today}-${currentTime}`;
+        const notificationKey = `${med.id}-${today}-${currentTimeStr}`;
+        const [medHours, medMinutes] = med.time.split(':').map(Number);
         
-        // Check regular schedule
-        if (med.time === currentTime && !lastNotified[notificationKey]) {
+        // 1. Check for new scheduled alert
+        if (med.time === currentTimeStr && !lastNotified[notificationKey]) {
           const alreadyLogged = logs.some(log => 
             log.medicationId === med.id && log.timestamp.startsWith(today)
           );
@@ -238,7 +242,7 @@ const App: React.FC = () => {
           }
         }
 
-        // Check snoozed alerts
+        // 2. Check for snoozed alerts
         const snoozeTarget = snoozedMeds[med.id];
         if (snoozeTarget && Date.now() >= snoozeTarget) {
           triggerAlert(med, `snooze-${med.id}-${Date.now()}`, today);
@@ -248,10 +252,29 @@ const App: React.FC = () => {
             return next;
           });
         }
+
+        // 3. Check for MISSED doses (Auto-log logic)
+        // If scheduled time + window < now, and no log entry for today
+        const scheduledToday = new Date(now);
+        scheduledToday.setHours(medHours, medMinutes, 0, 0);
+        
+        const missedThreshold = scheduledToday.getTime() + (settings.missedWindow * 60000);
+        
+        if (now.getTime() > missedThreshold) {
+           const hasLogToday = logs.some(log => 
+             log.medicationId === med.id && log.timestamp.startsWith(today)
+           );
+           
+           if (!hasLogToday) {
+             handleLogDose(med.id, 'missed');
+             // Also close any active alert UI if it matches
+             if (alertMed?.id === med.id) setAlertMed(null);
+           }
+        }
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [medications, logs, lastNotified, snoozedMeds]);
+  }, [medications, logs, lastNotified, snoozedMeds, settings.missedWindow, alertMed]);
 
   const triggerAlert = (med: Medication, key: string, today: string) => {
     setLastNotified(prev => ({ ...prev, [key]: today }));
@@ -259,7 +282,7 @@ const App: React.FC = () => {
     
     if (settings.notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
       const notif = new Notification(`ALARM: Take ${med.name}`, {
-        body: `Dose: ${med.dose}.${med.notes ? `\nNote: ${med.notes}` : ''}\n\nCLICK HERE TO MARK AS TAKEN`,
+        body: `Dose: ${med.dose}.${med.notes ? `\nNote: ${med.notes}` : ''}\n\nCLICK TO MARK AS TAKEN`,
         icon: 'https://cdn-icons-png.flaticon.com/512/883/883407.png',
         tag: `med-alarm-${med.id}`,
         requireInteraction: true 
@@ -291,14 +314,11 @@ const App: React.FC = () => {
 
   const confirmDelete = () => {
     if (!deletingMedId) return;
-    
     const medToDelete = medications.find(m => m.id === deletingMedId);
     if (medToDelete) {
       setDeletedMedications(prev => [medToDelete, ...prev].slice(0, 10)); 
     }
-
     setMedications(prev => prev.filter(m => m.id !== deletingMedId));
-    
     setLastNotified(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(key => {
@@ -306,10 +326,7 @@ const App: React.FC = () => {
       });
       return next;
     });
-    
-    if (alertMed?.id === deletingMedId) {
-      setAlertMed(null);
-    }
+    if (alertMed?.id === deletingMedId) setAlertMed(null);
     setDeletingMedId(null);
   };
 
@@ -326,9 +343,7 @@ const App: React.FC = () => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setUserPhoto(reader.result as string);
-      };
+      reader.onloadend = () => setUserPhoto(reader.result as string);
       reader.readAsDataURL(file);
     }
   };
@@ -343,21 +358,16 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
-    // 1. Stop active alarms
     setAlertMed(null);
     stopAlarm();
-    
-    // 2. Clear application state
     setMedications([]);
     setDeletedMedications([]);
     setLogs([]);
     setLastNotified({});
     setUserName(null);
     setUserPhoto(null);
-    setTempName(""); // Clear input field
+    setTempName("");
     setSnoozedMeds({});
-    
-    // 3. Clear LocalStorage
     localStorage.removeItem('mednotify_meds');
     localStorage.removeItem('mednotify_deleted_meds');
     localStorage.removeItem('mednotify_logs');
@@ -365,8 +375,6 @@ const App: React.FC = () => {
     localStorage.removeItem('mednotify_username');
     localStorage.removeItem('mednotify_userphoto');
     localStorage.removeItem('mednotify_settings');
-    
-    // 4. Force back to Welcome Screen
     setIsSettingsOpen(false);
     setIsNameModalOpen(true);
     setActiveTab('dashboard');
@@ -378,7 +386,6 @@ const App: React.FC = () => {
       alert("Geolocation is not supported by your browser.");
       return;
     }
-
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const lat = pos.coords.latitude;
@@ -387,9 +394,7 @@ const App: React.FC = () => {
         const mapsUrl = `https://www.google.com/maps/search/pharmacy/@${lat},${lng},15z`;
         window.open(mapsUrl, '_blank');
       },
-      (err) => {
-        alert("Location access is required to find pharmacies near you.");
-      },
+      (err) => alert("Location access is required to find pharmacies near you."),
       { enableHighAccuracy: true }
     );
   };
@@ -407,10 +412,11 @@ const App: React.FC = () => {
   };
 
   const isExpired = (dateStr?: string) => getExpiryState(dateStr) === 'expired';
-  const isTakenToday = (medId: string) => logs.some(l => l.medicationId === medId && l.timestamp.startsWith(new Date().toISOString().split('T')[0]));
+  const isLoggedToday = (medId: string) => logs.some(l => l.medicationId === medId && l.timestamp.startsWith(new Date().toISOString().split('T')[0]));
+  const getLogStatusToday = (medId: string) => logs.find(l => l.medicationId === medId && l.timestamp.startsWith(new Date().toISOString().split('T')[0]))?.status;
 
   const RefillBadge = ({ count }: { count: number }) => (
-    <div className={`mt-2 flex items-center space-x-1.5 px-2 py-1 rounded-lg w-fit transition-all duration-300 bg-amber-500 text-white shadow-sm animate-bounce`}>
+    <div className="mt-2 flex items-center space-x-1.5 px-2 py-1 rounded-lg w-fit transition-all duration-300 bg-amber-500 text-white shadow-sm animate-bounce">
       <span className="text-xs">⚠️</span>
       <span className="text-[9px] font-black tracking-tight uppercase">REFILL: {count} LEFT</span>
     </div>
@@ -422,7 +428,7 @@ const App: React.FC = () => {
       expired: { bg: 'bg-red-600', text: 'text-white', label: 'EXPIRED', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z' },
       critical: { bg: 'bg-amber-100 border-2 border-amber-500 shadow-md', text: 'text-amber-700', label: 'EXPIRING SOON!', pulse: true, icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
       warning: { bg: 'bg-orange-50 border border-orange-200', text: 'text-orange-600', label: 'EXP:', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2v12a2 2 0 002 2z' },
-      safe: { bg: 'bg-slate-100', text: 'text-slate-500', label: 'EXP:', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2v12a2 2 0 002 2z' }
+      safe: { bg: 'bg-slate-100', text: 'text-slate-500', label: 'EXP:', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' }
     };
     const current = config[state] || config.safe;
     return (
@@ -449,14 +455,8 @@ const App: React.FC = () => {
   const medicationsNeedingRefill = medications.filter(m => m.remainingDoses <= m.refillThreshold && m.remainingDoses > 0);
 
   return (
-    <div className="min-h-screen pb-32 max-w-lg mx-auto bg-slate-50 shadow-xl relative overflow-x-hidden">
-      <input 
-        type="file" 
-        accept="image/*" 
-        ref={fileInputRef} 
-        className="hidden" 
-        onChange={handlePhotoUpload} 
-      />
+    <div className="min-h-screen pb-32 max-w-lg mx-auto bg-slate-50 shadow-xl relative overflow-x-hidden no-scrollbar">
+      <input type="file" accept="image/*" ref={fileInputRef} className="hidden" onChange={handlePhotoUpload} />
 
       {/* Welcome / Name Collection Modal */}
       {isNameModalOpen && (
@@ -475,16 +475,7 @@ const App: React.FC = () => {
                     <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Add Photo</p>
                   </div>
                 )}
-                <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                  <span className="text-xs font-bold uppercase">Change</span>
-                </div>
               </div>
-              {userPhoto && (
-                <button 
-                  onClick={(e) => { e.stopPropagation(); setUserPhoto(null); }}
-                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-8 h-8 flex items-center justify-center shadow-lg text-sm border-2 border-white"
-                >✕</button>
-              )}
             </div>
             
             <div className="space-y-2">
@@ -500,10 +491,7 @@ const App: React.FC = () => {
                 value={tempName}
                 onChange={(e) => setTempName(e.target.value)}
               />
-              <button 
-                type="submit" 
-                className="w-full bg-white text-blue-600 font-black py-5 rounded-3xl shadow-xl shadow-blue-900/20 active:scale-95 transition-all text-xl"
-              >
+              <button type="submit" className="w-full bg-white text-blue-600 font-black py-5 rounded-3xl shadow-xl active:scale-95 transition-all text-xl">
                 Let's Get Started
               </button>
             </form>
@@ -524,38 +512,27 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex items-center space-x-4">
-          <button 
-            onClick={() => { initAudio(); setIsSettingsOpen(true); }}
-            className="p-3 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"
-          >
+          <button onClick={() => { initAudio(); setIsSettingsOpen(true); }} className="p-3 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
           </button>
-          <div 
-            onClick={() => fileInputRef.current?.click()}
-            className="w-12 h-12 rounded-full bg-slate-100 border-2 border-white shadow-md overflow-hidden cursor-pointer hover:border-blue-400 transition-all"
-          >
-            {userPhoto ? (
-              <img src={userPhoto} alt="Profile" className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-xl">👤</div>
-            )}
+          <div onClick={() => fileInputRef.current?.click()} className="w-12 h-12 rounded-full bg-slate-100 border-2 border-white shadow-md overflow-hidden cursor-pointer">
+            {userPhoto ? <img src={userPhoto} alt="Profile" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-xl">👤</div>}
           </div>
         </div>
       </header>
 
       {activeTab === 'dashboard' && (
         <main className="px-6 py-4 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 text-white shadow-xl shadow-blue-200">
+          <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 text-white shadow-xl">
             <h2 className="text-lg font-semibold opacity-90 mb-1">Today's Progress</h2>
             <div className="flex items-baseline space-x-2 mb-4">
-              <span className="text-4xl font-bold">{logs.filter(l => l.timestamp.startsWith(new Date().toISOString().split('T')[0])).length}</span>
+              <span className="text-4xl font-bold">{logs.filter(l => l.timestamp.startsWith(new Date().toISOString().split('T')[0]) && l.status === 'taken').length}</span>
               <span className="text-blue-100 opacity-75">/ {medications.length} doses taken</span>
             </div>
             <div className="w-full bg-blue-900/30 h-2 rounded-full overflow-hidden">
-              <div className="bg-white h-full transition-all duration-1000" style={{ width: `${(logs.filter(l => l.timestamp.startsWith(new Date().toISOString().split('T')[0])).length / (medications.length || 1)) * 100}%` }} />
+              <div className="bg-white h-full transition-all duration-1000" style={{ width: `${(logs.filter(l => l.timestamp.startsWith(new Date().toISOString().split('T')[0]) && l.status === 'taken').length / (medications.length || 1)) * 100}%` }} />
             </div>
           </div>
 
@@ -573,12 +550,7 @@ const App: React.FC = () => {
                   </div>
                 ))}
               </div>
-              <button 
-                onClick={() => setActiveTab('pharmacy')}
-                className="w-full mt-4 bg-amber-500 text-white font-black py-3 rounded-2xl text-xs uppercase tracking-widest shadow-lg shadow-amber-200 active:scale-[0.98] transition-all"
-              >
-                Find Pharmacy Nearby
-              </button>
+              <button onClick={() => setActiveTab('pharmacy')} className="w-full mt-4 bg-amber-500 text-white font-black py-3 rounded-2xl text-xs uppercase shadow-lg">Find Pharmacy Nearby</button>
             </div>
           )}
 
@@ -586,7 +558,7 @@ const App: React.FC = () => {
             <div className="text-2xl bg-blue-50 p-3 rounded-2xl text-blue-600 shrink-0">{loadingTip ? "⏳" : "💡"}</div>
             <div className="flex-1">
               <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1">Daily Health Insight</h4>
-              {loadingTip ? <div className="space-y-2 animate-pulse"><div className="h-2 bg-slate-100 rounded w-full"></div><div className="h-2 bg-slate-100 rounded w-2/3"></div></div> : <p className="text-sm font-medium text-slate-700 leading-relaxed italic animate-in fade-in duration-700">"{dailyTip}"</p>}
+              {loadingTip ? <div className="space-y-2 animate-pulse"><div className="h-2 bg-slate-100 rounded w-full"></div><div className="h-2 bg-slate-100 rounded w-2/3"></div></div> : <p className="text-sm font-medium text-slate-700 italic">"{dailyTip}"</p>}
             </div>
           </div>
 
@@ -601,59 +573,43 @@ const App: React.FC = () => {
               ) : (
                 <>
                   {medications.map(med => {
+                      const status = getLogStatusToday(med.id);
+                      const taken = status === 'taken';
+                      const missed = status === 'missed';
                       const expired = isExpired(med.expiryDate);
-                      const taken = isTakenToday(med.id);
                       const needsRefill = med.remainingDoses <= med.refillThreshold && med.remainingDoses > 0;
                       const outOfStock = med.remainingDoses === 0;
 
                       return (
-                        <div key={med.id} className={`bg-white p-5 rounded-3xl shadow-sm border group transition-all relative ${taken ? 'border-green-400 bg-green-50 shadow-green-100' : (outOfStock || expired) ? 'border-red-200 bg-red-50/30' : needsRefill ? 'border-amber-200 bg-amber-50/30' : 'border-slate-100'}`}>
+                        <div key={med.id} className={`bg-white p-5 rounded-3xl shadow-sm border transition-all relative ${taken ? 'border-green-400 bg-green-50' : missed ? 'border-orange-400 bg-orange-50' : (outOfStock || expired) ? 'border-red-200 bg-red-50/30' : needsRefill ? 'border-amber-200 bg-amber-50/30' : 'border-slate-100'}`}>
                           <div className="flex justify-between items-start pr-12">
                             <div className="flex space-x-4">
-                              <div className="relative">
-                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all duration-500 ${taken ? 'bg-green-500 text-white rotate-[360deg]' : (outOfStock || expired) ? 'bg-red-100 text-red-600' : needsRefill ? 'bg-amber-100 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
-                                  {taken ? '✓' : (outOfStock || expired || needsRefill ? '⚠️' : '💊')}
-                                </div>
+                              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${taken ? 'bg-green-500 text-white' : missed ? 'bg-orange-500 text-white' : (outOfStock || expired) ? 'bg-red-100 text-red-600' : needsRefill ? 'bg-amber-100 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
+                                {taken ? '✓' : missed ? '✕' : (outOfStock || expired || needsRefill ? '⚠️' : '💊')}
                               </div>
                               <div className="flex-1">
-                                <h4 className={`font-bold transition-colors ${taken ? 'text-green-800' : (outOfStock || expired) ? 'text-red-700' : needsRefill ? 'text-amber-800' : 'text-slate-800'}`}>{med.name}</h4>
+                                <h4 className={`font-bold ${taken ? 'text-green-800' : missed ? 'text-orange-800' : (outOfStock || expired) ? 'text-red-700' : needsRefill ? 'text-amber-800' : 'text-slate-800'}`}>{med.name}</h4>
                                 <p className="text-xs text-slate-500">{med.dose} • {med.time}</p>
                                 {med.notes && <HighlightedNote note={med.notes} />}
                                 <div className="flex flex-wrap gap-2">
                                   {med.expiryDate && <ExpiryBadge date={med.expiryDate} />}
                                   {needsRefill && <RefillBadge count={med.remainingDoses} />}
-                                  {outOfStock && (
-                                    <div className="mt-2 flex items-center space-x-1.5 px-2 py-0.5 rounded-lg w-fit bg-red-600 text-white shadow-sm">
-                                      <span className="text-[8.5px] font-black tracking-tight uppercase">EMPTY - REFILL NOW!</span>
-                                    </div>
-                                  )}
+                                  {missed && <span className="mt-2 px-2 py-0.5 rounded-lg bg-orange-600 text-white text-[8.5px] font-black uppercase tracking-tight">MISSED TODAY</span>}
                                 </div>
                               </div>
                             </div>
-                            <div className="text-right flex flex-col items-end space-y-2">
-                              {!taken && !expired && !outOfStock && <button onClick={() => { initAudio(); handleLogDose(med.id, 'taken'); }} className="w-10 h-10 rounded-full border-2 border-blue-200 flex items-center justify-center hover:bg-green-500 hover:border-green-500 text-blue-400 hover:text-white transition-all active:scale-90 shadow-sm">✓</button>}
+                            <div className="text-right flex flex-col items-end">
+                              {!status && !expired && !outOfStock && <button onClick={() => { initAudio(); handleLogDose(med.id, 'taken'); }} className="w-10 h-10 rounded-full border-2 border-blue-200 flex items-center justify-center text-blue-400 hover:bg-green-500 hover:text-white transition-all">✓</button>}
                             </div>
                           </div>
-                          
-                          <button 
-                            type="button" 
-                            onClick={(e) => handleDeleteRequest(e, med.id)} 
-                            className="absolute top-4 right-4 text-slate-400 hover:text-red-600 p-3 rounded-full hover:bg-red-50 transition-colors z-10"
-                            title="Delete Medication"
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
+                          <button type="button" onClick={(e) => handleDeleteRequest(e, med.id)} className="absolute top-4 right-4 text-slate-400 hover:text-red-600 p-3 rounded-full transition-colors z-10">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                           </button>
                         </div>
                       )
                   })}
-                  
-                  <button 
-                    onClick={() => { initAudio(); setIsFormOpen(true); }}
-                    className="w-full py-6 mt-4 border-2 border-dashed border-blue-200 rounded-3xl bg-blue-50 text-blue-700 font-black flex flex-col items-center justify-center space-y-1 hover:bg-blue-100 hover:border-blue-300 transition-all active:scale-[0.98] group shadow-sm"
-                  >
-                    <span className="text-2xl group-hover:scale-125 transition-transform">+</span>
+                  <button onClick={() => { initAudio(); setIsFormOpen(true); }} className="w-full py-6 mt-4 border-2 border-dashed border-blue-200 rounded-3xl bg-blue-50 text-blue-700 font-black flex flex-col items-center justify-center space-y-1 shadow-sm">
+                    <span className="text-2xl">+</span>
                     <span className="uppercase tracking-widest text-[10px]">Add New Medication</span>
                   </button>
                 </>
@@ -667,35 +623,21 @@ const App: React.FC = () => {
         <main className="px-6 py-4 space-y-4 animate-in fade-in slide-in-from-bottom-4">
           <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center">🕒 Daily Schedule</h2>
           {medications.sort((a,b) => a.time.localeCompare(b.time)).map(med => {
-            const taken = isTakenToday(med.id);
-            const expired = isExpired(med.expiryDate);
-            const needsRefill = med.remainingDoses <= med.refillThreshold && med.remainingDoses > 0;
-            const outOfStock = med.remainingDoses === 0;
-
+            const status = getLogStatusToday(med.id);
+            const taken = status === 'taken';
+            const missed = status === 'missed';
             return (
-              <div 
-                key={med.id} 
-                onClick={() => !taken && !expired && !outOfStock && (initAudio(), handleLogDose(med.id, 'taken'))} 
-                className={`flex flex-col p-5 rounded-3xl border transition-all cursor-pointer relative group ${taken ? 'bg-green-50 border-green-200 opacity-90' : (outOfStock || expired) ? 'bg-red-50 border-red-100' : needsRefill ? 'bg-amber-50/50 border-amber-100' : 'bg-white shadow-md border-blue-100 active:scale-[0.98]'}`}
-              >
+              <div key={med.id} onClick={() => !status && (initAudio(), handleLogDose(med.id, 'taken'))} className={`flex flex-col p-5 rounded-3xl border transition-all cursor-pointer relative ${taken ? 'bg-green-50 border-green-200 opacity-90' : missed ? 'bg-orange-50 border-orange-200' : 'bg-white shadow-md border-blue-100'}`}>
                 <div className="flex items-center space-x-4">
-                  <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${taken ? 'bg-green-500 border-green-500 text-white' : (outOfStock || expired) ? 'border-red-300 bg-red-50' : needsRefill ? 'border-amber-400 bg-amber-50 text-amber-600' : 'border-blue-200'}`}>
-                    {taken ? <span className="font-bold">✓</span> : (outOfStock || expired || needsRefill ? '⚠️' : '')}
+                  <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center shrink-0 ${taken ? 'bg-green-500 border-green-500 text-white' : missed ? 'bg-orange-500 border-orange-500 text-white' : 'border-blue-200'}`}>
+                    {taken ? '✓' : missed ? '✕' : ''}
                   </div>
                   <div className="flex-1">
-                    <span className={`text-sm font-bold ${taken ? 'text-green-700' : 'text-blue-600'}`}>{med.time}</span>
-                    <h4 className={`font-bold ${taken ? 'text-green-900' : 'text-slate-800'}`}>{med.name}</h4>
-                    <p className="text-xs text-slate-500">{med.dose}</p>
-                    <div className="flex flex-wrap gap-2">
-                      {med.expiryDate && <ExpiryBadge date={med.expiryDate} />}
-                      {needsRefill && <RefillBadge count={med.remainingDoses} />}
-                    </div>
+                    <span className={`text-sm font-bold ${taken ? 'text-green-700' : missed ? 'text-orange-700' : 'text-blue-600'}`}>{med.time}</span>
+                    <h4 className={`font-bold ${taken ? 'text-green-900' : missed ? 'text-orange-900' : 'text-slate-800'}`}>{med.name}</h4>
+                    <p className="text-xs text-slate-500">{med.dose} • {status ? status.toUpperCase() : 'PENDING'}</p>
                   </div>
                 </div>
-                {med.notes && <div className="ml-12"><HighlightedNote note={med.notes} /></div>}
-                <button type="button" onClick={(e) => handleDeleteRequest(e, med.id)} className="absolute top-4 right-4 text-slate-300 hover:text-red-500 transition-all p-3 rounded-full hover:bg-red-50">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                </button>
               </div>
             )
           })}
@@ -707,11 +649,10 @@ const App: React.FC = () => {
            <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100 text-center">
              <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center text-4xl mx-auto mb-6">📍</div>
              <h2 className="text-2xl font-bold text-slate-800 mb-2">Pharmacy Locator</h2>
-             <p className="text-slate-500 mb-8 text-sm leading-relaxed">Find the closest pharmacies around your current location directly on Google Maps for real-time directions and opening hours.</p>
-             <button onClick={openPharmacyInMaps} className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl flex items-center justify-center space-x-3 active:scale-95 transition-all shadow-xl shadow-blue-100 text-lg">
-               <span>🚀 Open Nearby in Google Maps</span>
+             <p className="text-slate-500 mb-8 text-sm">Find closest pharmacies on Google Maps for real-time directions.</p>
+             <button onClick={openPharmacyInMaps} className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl flex items-center justify-center space-x-3 active:scale-95 transition-all shadow-xl text-lg">
+               <span>🚀 Open Google Maps</span>
              </button>
-             {location && <div className="mt-8 p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Your Live Coordinates</p><code className="text-[11px] font-mono text-blue-600">{location.lat.toFixed(6)}, {location.lng.toFixed(6)}</code></div>}
            </div>
         </main>
       )}
@@ -719,7 +660,7 @@ const App: React.FC = () => {
       {activeTab === 'history' && (
         <main className="px-6 py-4 space-y-8 animate-in fade-in slide-in-from-bottom-4">
            <section>
-             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center"><span className="mr-2">📝</span> Medication Logs</h2>
+             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center">📝 Medication Logs</h2>
              <div className="space-y-3">
                {logs.length === 0 ? <p className="text-center py-6 text-slate-400 italic">No activity logs yet.</p> : 
                  logs.slice(0, 50).map(log => {
@@ -727,47 +668,29 @@ const App: React.FC = () => {
                    return (
                      <div key={log.id} className="bg-white p-4 rounded-2xl flex items-center justify-between border border-slate-100">
                        <div className="flex items-center space-x-3">
-                         <div className={`w-2 h-2 rounded-full ${log.status === 'taken' ? 'bg-green-500' : 'bg-red-400'}`} />
+                         <div className={`w-2 h-2 rounded-full ${log.status === 'taken' ? 'bg-green-500' : log.status === 'missed' ? 'bg-orange-500' : 'bg-red-400'}`} />
                          <div>
-                           <h5 className="font-bold text-slate-800 text-sm">{med?.name || 'Deleted Medication'}</h5>
+                           <h5 className="font-bold text-slate-800 text-sm">{med?.name || 'Medication'}</h5>
                            <p className="text-[10px] text-slate-400">{new Date(log.timestamp).toLocaleString()}</p>
                          </div>
                        </div>
-                       <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${log.status === 'taken' ? 'text-green-600 bg-green-50' : 'text-red-600 bg-red-50'}`}>{log.status}</span>
+                       <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${log.status === 'taken' ? 'text-green-600 bg-green-50' : log.status === 'missed' ? 'text-orange-600 bg-orange-50' : 'text-red-600 bg-red-50'}`}>{log.status}</span>
                      </div>
                    )
                  })}
              </div>
            </section>
-
-           {deletedMedications.length > 0 && (
-             <section className="animate-in slide-in-from-bottom-4 duration-500">
-               <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center"><span className="mr-2">🗑️</span> Recently Removed <span className="ml-auto text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded-full uppercase tracking-widest">Restoreable</span></h2>
-               <div className="space-y-3">
-                 {deletedMedications.map(med => (
-                   <div key={med.id} className="bg-slate-50 border-2 border-dashed border-slate-200 p-4 rounded-2xl flex items-center justify-between">
-                     <div className="opacity-60">
-                       <h5 className="font-bold text-slate-600 text-sm line-through">{med.name}</h5>
-                       <p className="text-[10px] text-slate-400">{med.dose} • Archived</p>
-                     </div>
-                     <button onClick={() => handleRestoreMed(med.id)} className="bg-blue-600 text-white text-[10px] font-black px-4 py-2 rounded-xl shadow-lg shadow-blue-100 active:scale-90 transition-all uppercase tracking-wider">Undo Delete</button>
-                   </div>
-                 ))}
-               </div>
-             </section>
-           )}
         </main>
       )}
 
       {deletingMedId && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-end sm:items-center justify-center p-4 animate-in fade-in duration-300">
           <div className="bg-white w-full max-w-sm rounded-[32px] p-8 shadow-2xl animate-in slide-in-from-bottom-8 duration-300">
-            <div className="w-16 h-16 bg-red-50 text-red-600 rounded-3xl flex items-center justify-center text-3xl mb-6 mx-auto">🗑️</div>
             <h3 className="text-2xl font-black text-slate-800 text-center mb-2">Delete Medication?</h3>
-            <p className="text-slate-500 text-center mb-8 leading-relaxed">Are you sure you want to remove <span className="font-bold text-slate-800">{medications.find(m => m.id === deletingMedId)?.name}</span>? This will move it to History where you can undo if needed.</p>
+            <p className="text-slate-500 text-center mb-8">Are you sure you want to remove <span className="font-bold">{medications.find(m => m.id === deletingMedId)?.name}</span>?</p>
             <div className="space-y-3">
               <button onClick={confirmDelete} className="w-full bg-red-600 text-white font-black py-4 rounded-2xl shadow-lg shadow-red-100 active:scale-95 transition-all text-lg">Yes, Delete It</button>
-              <button onClick={() => setDeletingMedId(null)} className="w-full bg-slate-100 text-slate-600 font-bold py-4 rounded-2xl active:scale-95 transition-all">Keep Medication</button>
+              <button onClick={() => setDeletingMedId(null)} className="w-full bg-slate-100 text-slate-600 font-bold py-4 rounded-2xl active:scale-95 transition-all">Cancel</button>
             </div>
           </div>
         </div>
@@ -776,18 +699,19 @@ const App: React.FC = () => {
       {alertMed && (
         <div className="fixed inset-0 bg-red-600 z-[200] flex items-center justify-center p-8 text-white text-center animate-pulse overflow-hidden">
           <div className="space-y-8 relative z-10">
-            <div className="text-9xl animate-bounce drop-shadow-2xl">🚨</div>
+            <div className="text-9xl animate-bounce">🚨</div>
             <div>
               <h2 className="text-6xl font-black mb-2 tracking-tighter uppercase">Take {alertMed.name}</h2>
               <p className="text-2xl font-bold mb-4 opacity-90">{alertMed.dose}</p>
-              {alertMed.notes && <div className="bg-white/10 backdrop-blur-md p-4 rounded-3xl max-w-xs mx-auto mb-4 border border-white/20"><p className="text-sm font-bold uppercase tracking-widest opacity-70 mb-1">Note</p><p className="text-xl font-medium italic">"{alertMed.notes}"</p></div>}
-              {settings.soundEnabled && <div className="inline-block bg-white text-red-600 px-6 py-2 rounded-full text-sm font-black tracking-widest animate-pulse shadow-xl">ALARM RINGING ({settings.alarmStyle.toUpperCase()})</div>}
+              <div className="bg-white/20 text-white px-4 py-2 rounded-full inline-block text-xs font-bold animate-pulse">
+                AUTO-MISSES IN {settings.missedWindow} MINS
+              </div>
             </div>
             <div className="space-y-4 w-full max-w-sm mx-auto">
               <button onClick={() => handleLogDose(alertMed.id, 'taken')} className="w-full bg-white text-red-600 font-black py-8 rounded-[40px] shadow-2xl active:scale-95 transition-all text-3xl border-b-8 border-slate-200">I TOOK IT</button>
               <div className="flex gap-4">
                 <button onClick={handleSnooze} className="flex-1 bg-red-700/50 backdrop-blur text-white font-black py-4 rounded-3xl border border-white/20 text-lg uppercase tracking-wider">SNOOZE ({settings.snoozeDuration}m)</button>
-                <button onClick={() => handleLogDose(alertMed.id, 'skipped')} className="flex-1 bg-red-900/40 backdrop-blur text-white/70 font-bold py-4 rounded-3xl border border-white/10 text-lg">SKIP</button>
+                <button onClick={() => handleLogDose(alertMed.id, 'missed')} className="flex-1 bg-red-900/40 backdrop-blur text-white/70 font-bold py-4 rounded-3xl border border-white/10 text-lg">SKIP (MISS)</button>
               </div>
             </div>
           </div>
