@@ -13,11 +13,18 @@ interface SettingsModalProps {
   settings: UserSettings;
   updateSettings: (newSettings: UserSettings) => void;
   onClose: () => void;
+  onLogout: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ settings, updateSettings, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ settings, updateSettings, onClose, onLogout }) => {
   const toggle = (key: keyof UserSettings) => {
     updateSettings({ ...settings, [key]: !settings[key] });
+  };
+
+  const handleLogoutClick = () => {
+    if (window.confirm("Are you sure? This will delete all your medications, logs, and profile data permanently.")) {
+      onLogout();
+    }
   };
 
   return (
@@ -96,12 +103,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, updateSettings,
             </div>
           </div>
 
-          <button 
-            onClick={onClose}
-            className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl shadow-xl active:scale-95 transition-all text-sm uppercase tracking-widest"
-          >
-            Save Preferences
-          </button>
+          <div className="pt-4 border-t border-slate-100 space-y-3">
+            <button 
+              onClick={onClose}
+              className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl shadow-xl active:scale-95 transition-all text-sm uppercase tracking-widest"
+            >
+              Save Preferences
+            </button>
+            <button 
+              onClick={handleLogoutClick}
+              className="w-full bg-white text-red-600 border-2 border-red-100 font-bold py-4 rounded-2xl active:scale-95 transition-all text-sm uppercase tracking-widest flex items-center justify-center space-x-2"
+            >
+              <span>🚪</span>
+              <span>Reset & Logout</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -97,13 +97,16 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('mednotify_meds', JSON.stringify(medications));
-    localStorage.setItem('mednotify_deleted_meds', JSON.stringify(deletedMedications));
-    localStorage.setItem('mednotify_logs', JSON.stringify(logs));
-    localStorage.setItem('mednotify_last_notified', JSON.stringify(lastNotified));
-    localStorage.setItem('mednotify_settings', JSON.stringify(settings));
-    if (userName) localStorage.setItem('mednotify_username', userName);
-    if (userPhoto) localStorage.setItem('mednotify_userphoto', userPhoto);
+    // Only save if a user session is active (userName exists)
+    if (userName) {
+      localStorage.setItem('mednotify_meds', JSON.stringify(medications));
+      localStorage.setItem('mednotify_deleted_meds', JSON.stringify(deletedMedications));
+      localStorage.setItem('mednotify_logs', JSON.stringify(logs));
+      localStorage.setItem('mednotify_last_notified', JSON.stringify(lastNotified));
+      localStorage.setItem('mednotify_settings', JSON.stringify(settings));
+      localStorage.setItem('mednotify_username', userName);
+      if (userPhoto) localStorage.setItem('mednotify_userphoto', userPhoto);
+    }
   }, [medications, deletedMedications, logs, lastNotified, userName, userPhoto, settings]);
 
   const initAudio = () => {
@@ -239,7 +242,6 @@ const App: React.FC = () => {
         const snoozeTarget = snoozedMeds[med.id];
         if (snoozeTarget && Date.now() >= snoozeTarget) {
           triggerAlert(med, `snooze-${med.id}-${Date.now()}`, today);
-          // Clear snooze once triggered
           setSnoozedMeds(prev => {
             const next = { ...prev };
             delete next[med.id];
@@ -340,6 +342,36 @@ const App: React.FC = () => {
     }
   };
 
+  const handleLogout = () => {
+    // 1. Stop active alarms
+    setAlertMed(null);
+    stopAlarm();
+    
+    // 2. Clear application state
+    setMedications([]);
+    setDeletedMedications([]);
+    setLogs([]);
+    setLastNotified({});
+    setUserName(null);
+    setUserPhoto(null);
+    setTempName(""); // Clear input field
+    setSnoozedMeds({});
+    
+    // 3. Clear LocalStorage
+    localStorage.removeItem('mednotify_meds');
+    localStorage.removeItem('mednotify_deleted_meds');
+    localStorage.removeItem('mednotify_logs');
+    localStorage.removeItem('mednotify_last_notified');
+    localStorage.removeItem('mednotify_username');
+    localStorage.removeItem('mednotify_userphoto');
+    localStorage.removeItem('mednotify_settings');
+    
+    // 4. Force back to Welcome Screen
+    setIsSettingsOpen(false);
+    setIsNameModalOpen(true);
+    setActiveTab('dashboard');
+  };
+
   const openPharmacyInMaps = () => {
     initAudio();
     if (!navigator.geolocation) {
@@ -390,7 +422,7 @@ const App: React.FC = () => {
       expired: { bg: 'bg-red-600', text: 'text-white', label: 'EXPIRED', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z' },
       critical: { bg: 'bg-amber-100 border-2 border-amber-500 shadow-md', text: 'text-amber-700', label: 'EXPIRING SOON!', pulse: true, icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
       warning: { bg: 'bg-orange-50 border border-orange-200', text: 'text-orange-600', label: 'EXP:', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2v12a2 2 0 002 2z' },
-      safe: { bg: 'bg-slate-100', text: 'text-slate-500', label: 'EXP:', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' }
+      safe: { bg: 'bg-slate-100', text: 'text-slate-500', label: 'EXP:', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2v12a2 2 0 002 2z' }
     };
     const current = config[state] || config.safe;
     return (
@@ -426,7 +458,7 @@ const App: React.FC = () => {
         onChange={handlePhotoUpload} 
       />
 
-      {/* Name Collection Modal */}
+      {/* Welcome / Name Collection Modal */}
       {isNameModalOpen && (
         <div className="fixed inset-0 bg-blue-600 z-[300] flex items-center justify-center p-6 text-white animate-in fade-in duration-500">
           <div className="max-w-xs w-full text-center space-y-8 animate-in slide-in-from-bottom-12 duration-700">
@@ -527,7 +559,6 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Refill Alerts Section */}
           {medicationsNeedingRefill.length > 0 && (
             <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 animate-in slide-in-from-top-2">
               <div className="flex items-center space-x-2 mb-3">
@@ -661,19 +692,9 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                {med.notes && (
-                  <div className="ml-12">
-                    <HighlightedNote note={med.notes} />
-                  </div>
-                )}
-                <button 
-                  type="button" 
-                  onClick={(e) => handleDeleteRequest(e, med.id)} 
-                  className="absolute top-4 right-4 text-slate-300 hover:text-red-500 transition-all p-3 rounded-full hover:bg-red-50"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                {med.notes && <div className="ml-12"><HighlightedNote note={med.notes} /></div>}
+                <button type="button" onClick={(e) => handleDeleteRequest(e, med.id)} className="absolute top-4 right-4 text-slate-300 hover:text-red-500 transition-all p-3 rounded-full hover:bg-red-50">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                 </button>
               </div>
             )
@@ -686,25 +707,11 @@ const App: React.FC = () => {
            <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100 text-center">
              <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center text-4xl mx-auto mb-6">📍</div>
              <h2 className="text-2xl font-bold text-slate-800 mb-2">Pharmacy Locator</h2>
-             <p className="text-slate-500 mb-8 text-sm leading-relaxed">
-               Find the closest pharmacies around your current location directly on Google Maps for real-time directions and opening hours.
-             </p>
-             
-             <button 
-               onClick={openPharmacyInMaps} 
-               className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl flex items-center justify-center space-x-3 active:scale-95 transition-all shadow-xl shadow-blue-100 text-lg"
-             >
+             <p className="text-slate-500 mb-8 text-sm leading-relaxed">Find the closest pharmacies around your current location directly on Google Maps for real-time directions and opening hours.</p>
+             <button onClick={openPharmacyInMaps} className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl flex items-center justify-center space-x-3 active:scale-95 transition-all shadow-xl shadow-blue-100 text-lg">
                <span>🚀 Open Nearby in Google Maps</span>
              </button>
-
-             {location && (
-               <div className="mt-8 p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center">
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Your Live Coordinates</p>
-                 <code className="text-[11px] font-mono text-blue-600">
-                   {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
-                 </code>
-               </div>
-             )}
+             {location && <div className="mt-8 p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Your Live Coordinates</p><code className="text-[11px] font-mono text-blue-600">{location.lat.toFixed(6)}, {location.lng.toFixed(6)}</code></div>}
            </div>
         </main>
       )}
@@ -712,9 +719,7 @@ const App: React.FC = () => {
       {activeTab === 'history' && (
         <main className="px-6 py-4 space-y-8 animate-in fade-in slide-in-from-bottom-4">
            <section>
-             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center">
-               <span className="mr-2">📝</span> Medication Logs
-             </h2>
+             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center"><span className="mr-2">📝</span> Medication Logs</h2>
              <div className="space-y-3">
                {logs.length === 0 ? <p className="text-center py-6 text-slate-400 italic">No activity logs yet.</p> : 
                  logs.slice(0, 50).map(log => {
@@ -737,10 +742,7 @@ const App: React.FC = () => {
 
            {deletedMedications.length > 0 && (
              <section className="animate-in slide-in-from-bottom-4 duration-500">
-               <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center">
-                 <span className="mr-2">🗑️</span> Recently Removed
-                 <span className="ml-auto text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded-full uppercase tracking-widest">Restoreable</span>
-               </h2>
+               <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center"><span className="mr-2">🗑️</span> Recently Removed <span className="ml-auto text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded-full uppercase tracking-widest">Restoreable</span></h2>
                <div className="space-y-3">
                  {deletedMedications.map(med => (
                    <div key={med.id} className="bg-slate-50 border-2 border-dashed border-slate-200 p-4 rounded-2xl flex items-center justify-between">
@@ -748,12 +750,7 @@ const App: React.FC = () => {
                        <h5 className="font-bold text-slate-600 text-sm line-through">{med.name}</h5>
                        <p className="text-[10px] text-slate-400">{med.dose} • Archived</p>
                      </div>
-                     <button 
-                       onClick={() => handleRestoreMed(med.id)}
-                       className="bg-blue-600 text-white text-[10px] font-black px-4 py-2 rounded-xl shadow-lg shadow-blue-100 active:scale-90 transition-all uppercase tracking-wider"
-                     >
-                       Undo Delete
-                     </button>
+                     <button onClick={() => handleRestoreMed(med.id)} className="bg-blue-600 text-white text-[10px] font-black px-4 py-2 rounded-xl shadow-lg shadow-blue-100 active:scale-90 transition-all uppercase tracking-wider">Undo Delete</button>
                    </div>
                  ))}
                </div>
@@ -767,22 +764,10 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-w-sm rounded-[32px] p-8 shadow-2xl animate-in slide-in-from-bottom-8 duration-300">
             <div className="w-16 h-16 bg-red-50 text-red-600 rounded-3xl flex items-center justify-center text-3xl mb-6 mx-auto">🗑️</div>
             <h3 className="text-2xl font-black text-slate-800 text-center mb-2">Delete Medication?</h3>
-            <p className="text-slate-500 text-center mb-8 leading-relaxed">
-              Are you sure you want to remove <span className="font-bold text-slate-800">{medications.find(m => m.id === deletingMedId)?.name}</span>? This will move it to History where you can undo if needed.
-            </p>
+            <p className="text-slate-500 text-center mb-8 leading-relaxed">Are you sure you want to remove <span className="font-bold text-slate-800">{medications.find(m => m.id === deletingMedId)?.name}</span>? This will move it to History where you can undo if needed.</p>
             <div className="space-y-3">
-              <button 
-                onClick={confirmDelete}
-                className="w-full bg-red-600 text-white font-black py-4 rounded-2xl shadow-lg shadow-red-100 active:scale-95 transition-all text-lg"
-              >
-                Yes, Delete It
-              </button>
-              <button 
-                onClick={() => setDeletingMedId(null)}
-                className="w-full bg-slate-100 text-slate-600 font-bold py-4 rounded-2xl active:scale-95 transition-all"
-              >
-                Keep Medication
-              </button>
+              <button onClick={confirmDelete} className="w-full bg-red-600 text-white font-black py-4 rounded-2xl shadow-lg shadow-red-100 active:scale-95 transition-all text-lg">Yes, Delete It</button>
+              <button onClick={() => setDeletingMedId(null)} className="w-full bg-slate-100 text-slate-600 font-bold py-4 rounded-2xl active:scale-95 transition-all">Keep Medication</button>
             </div>
           </div>
         </div>
@@ -795,52 +780,21 @@ const App: React.FC = () => {
             <div>
               <h2 className="text-6xl font-black mb-2 tracking-tighter uppercase">Take {alertMed.name}</h2>
               <p className="text-2xl font-bold mb-4 opacity-90">{alertMed.dose}</p>
-              {alertMed.notes && (
-                <div className="bg-white/10 backdrop-blur-md p-4 rounded-3xl max-w-xs mx-auto mb-4 border border-white/20">
-                  <p className="text-sm font-bold uppercase tracking-widest opacity-70 mb-1">Note</p>
-                  <p className="text-xl font-medium italic">"{alertMed.notes}"</p>
-                </div>
-              )}
-              {settings.soundEnabled && (
-                <div className="inline-block bg-white text-red-600 px-6 py-2 rounded-full text-sm font-black tracking-widest animate-pulse shadow-xl">
-                  ALARM RINGING ({settings.alarmStyle.toUpperCase()})
-                </div>
-              )}
+              {alertMed.notes && <div className="bg-white/10 backdrop-blur-md p-4 rounded-3xl max-w-xs mx-auto mb-4 border border-white/20"><p className="text-sm font-bold uppercase tracking-widest opacity-70 mb-1">Note</p><p className="text-xl font-medium italic">"{alertMed.notes}"</p></div>}
+              {settings.soundEnabled && <div className="inline-block bg-white text-red-600 px-6 py-2 rounded-full text-sm font-black tracking-widest animate-pulse shadow-xl">ALARM RINGING ({settings.alarmStyle.toUpperCase()})</div>}
             </div>
             <div className="space-y-4 w-full max-w-sm mx-auto">
-              <button 
-                onClick={() => handleLogDose(alertMed.id, 'taken')} 
-                className="w-full bg-white text-red-600 font-black py-8 rounded-[40px] shadow-2xl active:scale-95 transition-all text-3xl border-b-8 border-slate-200"
-              >
-                I TOOK IT
-              </button>
+              <button onClick={() => handleLogDose(alertMed.id, 'taken')} className="w-full bg-white text-red-600 font-black py-8 rounded-[40px] shadow-2xl active:scale-95 transition-all text-3xl border-b-8 border-slate-200">I TOOK IT</button>
               <div className="flex gap-4">
-                <button 
-                  onClick={handleSnooze} 
-                  className="flex-1 bg-red-700/50 backdrop-blur text-white font-black py-4 rounded-3xl border border-white/20 text-lg uppercase tracking-wider"
-                >
-                  SNOOZE ({settings.snoozeDuration}m)
-                </button>
-                <button 
-                  onClick={() => handleLogDose(alertMed.id, 'skipped')} 
-                  className="flex-1 bg-red-900/40 backdrop-blur text-white/70 font-bold py-4 rounded-3xl border border-white/10 text-lg"
-                >
-                  SKIP
-                </button>
+                <button onClick={handleSnooze} className="flex-1 bg-red-700/50 backdrop-blur text-white font-black py-4 rounded-3xl border border-white/20 text-lg uppercase tracking-wider">SNOOZE ({settings.snoozeDuration}m)</button>
+                <button onClick={() => handleLogDose(alertMed.id, 'skipped')} className="flex-1 bg-red-900/40 backdrop-blur text-white/70 font-bold py-4 rounded-3xl border border-white/10 text-lg">SKIP</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {isSettingsOpen && (
-        <SettingsModal 
-          settings={settings} 
-          updateSettings={setSettings} 
-          onClose={() => setIsSettingsOpen(false)} 
-        />
-      )}
-
+      {isSettingsOpen && <SettingsModal settings={settings} updateSettings={setSettings} onClose={() => setIsSettingsOpen(false)} onLogout={handleLogout} />}
       {isFormOpen && <MedicineForm onAdd={handleAddMed} onClose={() => setIsFormOpen(false)} />}
       <Navigation activeTab={activeTab} setActiveTab={(tab) => { initAudio(); setActiveTab(tab); }} />
     </div>
