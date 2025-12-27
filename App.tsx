@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { Medication, DoseLog, Frequency } from './types';
 import Navigation from './components/Navigation';
 import MedicineForm from './components/MedicineForm';
@@ -539,7 +540,7 @@ const App: React.FC = () => {
           {medicationsNeedingRefill.length > 0 && (
             <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 animate-in slide-in-from-top-2">
               <div className="flex items-center space-x-2 mb-3">
-                <span className="text-xl">⚠️</span>
+                <span className="text-xl">⚠���</span>
                 <h4 className="text-sm font-black text-amber-800 uppercase tracking-wider">Refill Required</h4>
               </div>
               <div className="space-y-2">
@@ -721,6 +722,7 @@ const App: React.FC = () => {
       {isSettingsOpen && <SettingsModal settings={settings} updateSettings={setSettings} onClose={() => setIsSettingsOpen(false)} onLogout={handleLogout} />}
       {isFormOpen && <MedicineForm onAdd={handleAddMed} onClose={() => setIsFormOpen(false)} />}
       <Navigation activeTab={activeTab} setActiveTab={(tab) => { initAudio(); setActiveTab(tab); }} />
+      <Analytics />
     </div>
   );
 };
