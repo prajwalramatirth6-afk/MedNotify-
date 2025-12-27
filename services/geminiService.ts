@@ -1,9 +1,9 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-// Always use the process.env.API_KEY directly as per guidelines. 
-// A new instance is created on each call to ensure the latest API key is used.
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Use Vite's environment variable system
+// Always use the import.meta.env.VITE_API_KEY or fall back to API_KEY
+const getAI = () => new GoogleGenAI({ apiKey: import.meta.env.VITE_API_KEY || import.meta.env.API_KEY || '' });
 
 export const getMedicationInsight = async (name: string, dose: string) => {
   const ai = getAI();
